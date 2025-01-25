@@ -1,0 +1,75 @@
+Description For Kustomize Doc: https://docs.google.com/document/d/1A4Ykvzx_ehmPf-NdiCs51Z7enMULphdBcdMxZN_DzfE/edit?userstoinvite=srinivas@opsmx.io&sharingaction=manageaccess&role=writer&tab=t.0
+
+This YAML defines an Argo WorkflowTemplate that automates the deployment process using Kustomize and Helm. It involves two key steps: the first step uses Kustomize to deploy resources from a Git repository, and the second step deploys a Helm chart. 
+
+Workflow Overview
+WorkflowTemplate: Defines a reusable template for running workflows. This template is named deploy-kustomize-helm.
+Entrypoint: The entry point is the deploy-pipeline, which defines the sequence of steps (in this case, kustomize-deploy and helm-deploy).
+ServiceAccountName: Specifies the argo-workflows-sa service account that Argo Workflows will use to run the workflow.
+
+
+Templates
+This template consists of two sub-templates: kustomize-deploy and helm-deploy.
+1. deploy-pipeline
+This template runs a series of steps:
+Step 1: kustomize-deploy
+Step 2: helm-deploy
+
+
+The steps are executed sequentially, meaning the Kustomize deployment will happen first, followed by the Helm deployment.
+Step 1: kustomize-deploy Template
+This step is responsible for deploying resources using Kustomize. It uses the quay.io/opsmxpublic/kustomize:v2 container image and performs the following actions:
+
+Install Git: Installs Git using apk, the Alpine package manager.
+Install kubectl: Downloads and installs kubectl to interact with the Kubernetes cluster.
+Create Directory: Creates a directory (/workspace/kustomize-dir) where the Kustomize configuration will be stored.
+Clone Kustomize Repo: Clones the Kustomize Git repository (https://github.com/NaveenBalagouni/Kustomize.git) into the /workspace/kustomize-dir directory.
+Verify Repository Contents: Lists the contents of the cloned repository to ensure that the files were cloned successfully.
+Deploy with Kustomize: Uses kustomize build to build the resources in the cloned repository and then pipes the output to kubectl apply -f - to deploy the resources to the Kubernetes cluster.
+
+
+Step 2: helm-deploy Template
+This step deploys a Helm chart from a Git repository. It uses the alpine/helm:3.6.3 container image. This step performs the following actions:
+
+Install Git: Installs Git to clone the Helm chart repository.
+
+Clone Helm Chart Repo: Clones the Helm chart repository (https://github.com/NaveenBalagouni/Kustomize.git) into /workspace/my-chart.
+
+Verify Repository Contents: Lists the contents of the cloned repository to confirm that the Helm chart was cloned successfully.
+
+Change Directory: Moves into the directory containing the cloned Helm chart.
+
+Deploy with Helm: Runs the helm upgrade --install command to install or upgrade the Helm chart (opsmx-release) in the argo-workflows namespace.
+
+Key Components Breakdown:
+
+Containers:
+kustomize-deploy runs a container with Kustomize (quay.io/opsmxpublic/kustomize:v2).
+helm-deploy runs a container with Helm (alpine/helm:3.6.3).
+
+ServiceAccount: The workflow runs with the service account argo-workflows-sa. This service account should have appropriate permissions to interact with Kubernetes resources.
+
+Git Cloning:
+
+In both the kustomize-deploy and helm-deploy steps, the workflow clones the Git repository (https://github.com/NaveenBalagouni/Kustomize.git) to access the necessary configuration files for Kustomize and Helm. You might need to ensure that these repositories contain the right configurations for each tool.
+  
+Commands and Arguments:
+
+The args field specifies the shell commands to be executed within the container. These commands install required tools (Git, kubectl, Helm), clone repositories, and deploy configurations.
+
+Deployment Process:
+
+Kustomize Deployment: In the first step, Kustomize is used to manage Kubernetes resources. It pulls the Kustomize configuration from the Git repository, builds it using kustomize build, and applies it using kubectl.
+
+Helm Deployment: In the second step, Helm is used to deploy an application defined in a Helm chart. It also pulls the chart from the Git repository and runs helm upgrade --install to deploy the chart in the argo-workflows namespace.
+
+Notes:
+
+Namespace: Both deployments (Kustomize and Helm) will happen in the argo-workflows namespace, as specified in the helm-deploy step. You should ensure this namespace exists in your Kubernetes cluster.
+
+Helm Chart Source: You need to make sure that the Git repository you're cloning contains a valid Helm chart in the expected directory. In this case, the chart is expected to be in /workspace/my-chart.
+
+Service Account: The argo-workflows-sa service account used by the workflow should have the necessary RBAC permissions to perform actions like kubectl apply, helm upgrade, and cloning Git repositories.
+
+The goal of the demo is to showcase how to integrate these tools into a reusable Argo WorkflowTemplate and deploy applications in a Kubernetes environment efficiently.
+
