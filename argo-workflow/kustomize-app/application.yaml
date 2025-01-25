@@ -5,12 +5,13 @@ metadata:
   namespace: argo-workflows
 spec:
   entrypoint: deploy-pipeline
+  serviceAccountName: argo-workflows-sa
   templates:
     - name: deploy-pipeline
       steps:
         - - name: kustomize-deploy
             template: kustomize-deploy
-        - - name: helm-deploy
+          - name: helm-deploy
             template: helm-deploy
 
     - name: kustomize-deploy
@@ -36,13 +37,13 @@ spec:
 
             # Clone the repository containing your Kustomize configuration
             echo "Cloning Kustomize repo..."
-            git clone https://github.com/OpsMx/cnoe.git /workspace/kustomize-dir
+            git clone https://github.com/NaveenBalagouni/Kustomize.git /workspace/kustomize-dir
 
             # Verify the contents of /workspace/kustomize-dir
             echo "Contents of /workspace/kustomize-dir:"
             ls -al /workspace/kustomize-dir
 
-            # Deploy using Kustomize (corrected directory)
+            # Deploy using Kustomize
             echo "Deploying with Kustomize..."
             kustomize build /workspace/kustomize-dir | kubectl apply -f -
 
@@ -55,4 +56,26 @@ spec:
         args:
           - |
             echo "Deploying with Helm..."
-            helm upgrade --install my-release /workspace/helm-chart --namespace argo-workflows
+
+            # Install git to clone Helm chart
+            apk update && apk add --no-cache git
+
+           
+
+            # Clone the Helm chart repository from GitHub into /workspace/helm-chart
+            echo "Cloning Helm chart repository..."
+            git clone https://github.com/NaveenBalagouni/Kustomize.git /workspace/my-chart
+
+            # Verify the contents of the /workspace/helm-chart directory
+            echo "Contents of /workspace/my-chart:"
+           
+            
+           
+            echo "Current directory: $(pwd)"
+            ls -ltra /workspace/my-chart/
+            
+
+            # Run the Helm upgrade command with the cloned chart
+            #helm template opsmx-release /workspace/my-chart/issuegen-0.1.0.tgz --namespace argo-workflows
+
+            helm upgrade --install opsmx-release /workspace/my-chart/issuegen-0.1.0.tgz --namespace argo-workflows
