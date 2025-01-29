@@ -5,39 +5,63 @@ metadata:
   namespace: argo-workflows
 spec:
   entrypoint: deploy-pipeline
+  serviceAccountName: argo-workflows-sa
   templates:
     - name: deploy-pipeline
       steps:
         - - name: clone-repo
             template: clone-repo
-        - - name: maven-build
+
+          - name: maven-build
             template: maven-build
-        - - name: kaniko-build-push
+          
+          - name: kaniko-build-push
             template: kaniko-build-push
-        - - name: update-values-yaml
+
+          - name: update-values-yaml
             template: update-values-yaml
 
     - name: clone-repo
       container:
         image: "quay.io/opsmxpublic/opsmx-custom-binaries:kubectl-spin-cli-git-bash-jq-yq-argocd-v2"
-        command: ["/bin/sh", "-c"]
+        command: ["/bin/bash", "-c"]
         args:
           - |
-            echo "Cloning repository..."
-            git clone --branch $BRANCH https://github.com/OpsMx/issue-generator.git /mnt/git-repo
+            echo "Cloning repository and checking out branch..."
+            git_url=$(echo $GIT_URL)
+            git_branch=$(echo $GIT_BRANCH)
+            git_username=$(echo $GIT_USERNAME)
+            git_credentials=$(echo $GIT_TOKEN)
+            
+            echo "Git URL: ${git_url}"
+            echo "Git Branch: ${git_branch}"
+            echo "Git Username: ${git_username}"
+            git config --global credential.helper store
+            echo "/mnt/git-repo already exists, cleaning up..."
+            rm -rf /mnt/git-repo
+          
+            echo "https://${git_username}:${git_credentials}@github.com" > /mnt/git-repo/.git-credentials
+            git clone -b ${git_branch} ${git_url} /mnt/git-repo
             cd /mnt/git-repo
-            git checkout $BRANCH
-      volumeMounts:
-        - mountPath: /mnt/git-repo
-          name: git-pvc
-      envFrom:
-        - secretRef:
-            name: git-credentials
-      env:
-        - name: REPO_URL
-          value: "https://github.com/OpsMx/issue-generator.git"
-        - name: BRANCH
-          value: "main"
+            git checkout ${git_branch}
+        env:
+          - name: GIT_URL
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: git-url
+          - name: GIT_BRANCH
+            value: "main"
+          - name: GIT_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: git-username
+          - name: GIT_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: gittoken
 
     - name: maven-build
       container:
@@ -46,33 +70,75 @@ spec:
         args:
           - |
             echo "Building project with Maven..."
-            cd /mnt/git-repo
-            mvn clean install
-      volumeMounts:
-        - mountPath: /mnt/git-repo
-          name: git-pvc
+            echo "Cloning repository and checking out branch..."
+            git_url=$(echo $GIT_URL)
+            git_branch=$(echo $GIT_BRANCH)
+            git_username=$(echo $GIT_USERNAME)
+            git_credentials=$(echo $GIT_TOKEN)
+            
+            echo "Git URL: ${git_url}"
+            echo "Git Branch: ${git_branch}"
+            echo "Git Username: ${git_username}"
+            echo "Git Token: ${git_credentials}"
+            
+            git clone -b ${git_branch} ${git_url} /mnt/git-repo
+            cd /mnt/git-repo/
+            ls -ltra /mnt/git-repo
+
+            #mvn clean install -X -e > maven-debug.log 2>&1
+            #cat /mnt/git-repo/maven-debug.log
+            
+            mvn -B -DskipTests clean install -e > maven-debug.log 2>&1
+            cat /mnt/git-repo/maven-debug.log
+
+        env:
+          - name: GIT_URL
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: git-url
+          - name: GIT_BRANCH
+            value: "main"
+          - name: GIT_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: git-username
+          - name: GIT_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: gittoken
 
     - name: kaniko-build-push
+      inputs:
+        parameters:
+          - name: docker-registry
+            value: quay.io
+          - name: docker-image
+            value: opsmxpublic/baseline-issuegen
+          - name: image-tag
+            value: latest
       container:
-        image: "bitnami/kaniko"
+        image: gcr.io/kaniko-project/executor:v1.9.0-debug
+        imagePullPolicy: Always
         command: ["/kaniko/executor"]
         args:
-          - "--context=/mnt/git-repo"
-          - "--dockerfile=/mnt/git-repo/Dockerfile"
-          - "--destination=$DOCKER_REGISTRY/$DOCKER_IMAGE:$IMAGE_TAG"
-      volumeMounts:
-        - mountPath: /mnt/git-repo
-          name: git-pvc
-      envFrom:
-        - secretRef:
-            name: docker-credentials
-      env:
-        - name: DOCKER_REGISTRY
-          value: "quay.io"
-        - name: DOCKER_IMAGE
-          value: "quay.io/opsmxpublic/opsmx-custom-binaries:kubectl-spin-cli-git-bash-jq-yq-argocd-v2"
-        - name: IMAGE_TAG
-          value: "kubectl-spin-cli-git-bash-jq-yq-argocd-v2"
+          [
+            "--context=git://github.com/NaveenBalagouni/kaniko-build.git",
+            "--dockerfile=/mnt/git-repo/Dockerfile",
+            "--destination={{inputs.parameters.docker-registry}}/{{inputs.parameters.docker-image}}:{{inputs.parameters.image-tag}}"
+          ]
+        volumeMounts:
+          - name: docker-config-volume
+            mountPath: /kaniko/.docker/
+      volumes:
+        - name: docker-config-volume
+          secret:
+            secretName: docker-credentialsquay
+            items:
+              - key: .dockerconfigjson
+                path: config.json
 
     - name: update-values-yaml
       container:
@@ -80,21 +146,66 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
           - |
-            echo "Updating values.yaml..."
-            yq eval '.appVersion = "1.0.0"' -i /mnt/git-repo/helm-app/values.yaml
-            cd /mnt/git-repo
-            git config --global user.email "naveen.balagouni@opsmx.io"
-            git config --global user.name "Naveen Balagouni"
-            git commit -am "Updated helm-app/values.yaml"
-            git push origin main
-      volumeMounts:
-        - mountPath: /mnt/git-repo
-          name: git-pvc
-      envFrom:
-        - secretRef:
-            name: git-credentials
+            echo "Cloning Git repository..."
+            echo "GIT_URL: $GIT_URL"
+            echo "GIT_BRANCH: $GIT_BRANCH"
+            echo "GIT_USERNAME: $GIT_USERNAME"
+            echo "GIT_TOKEN: $GIT_TOKEN"
+            echo "GIT_EMAIL: $GIT_EMAIL"
+            
+            git_url=$GIT_URL
+            git_branch=$GIT_BRANCH
+            git_username=$GIT_USERNAME
+            git_credentials=$GIT_TOKEN
 
-  volumes:
-    - name: git-pvc
-      persistentVolumeClaim:
-        claimName: git-pvc
+            echo "Setting up Git credentials..."
+            git config --global credential.helper store
+            echo "https://${git_username}:${git_credentials}@github.com"
+
+            echo "Cloning Git repository..."
+            git clone ${git_url} /mnt/git-repo
+            echo "Current directory: $(pwd)"
+            ls -ltra /mnt/git-repo/
+            
+            echo "v1.0.0" > /mnt/git-repo/artifact  
+            # Checking if artifact file exists
+            image=$(cat /mnt/git-repo/artifact)
+            echo "Image tag: $image"
+            yq eval ".image = \"$image\"" -i /mnt/git-repo/values.yaml
+            # Check the contents of values.yaml to verify the change
+            cat /mnt/git-repo/values.yaml
+           
+            cd /mnt/git-repo
+            echo "Pushing changes to GitHub..."
+            # Set user details (make sure these are set correctly)
+            git config user.name "$GIT_USERNAME"
+            git config user.email "$GIT_EMAIL"
+            git add /mnt/git-repo/values.yaml
+            git commit -m "Update image tag in values.yaml"
+            git push https://$GIT_USERNAME:$GIT_TOKEN@github.com/NaveenBalagouni/deploy-pipeline.git $GIT_BRANCH
+            
+        env:
+          - name: GIT_URL
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: git-url
+          - name: GIT_BRANCH
+            value: "main"
+          - name: GIT_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: git-username
+          
+          - name: GIT_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: gittoken 
+
+          - name: GIT_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: git-credentials
+                key: git-email
