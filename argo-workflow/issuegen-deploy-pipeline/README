@@ -1,0 +1,213 @@
+Argo WorkflowTemplate Documentation: deploy-pipeline 
+Doc url: https://docs.google.com/document/d/1w8nsE57kjDd7vwWyT4e6KMqQmjo6IrkrUMWXbjBNivc/edit?tab=t.0
+
+This document provides an overview and detailed explanation of the WorkflowTemplate resource used to define the deploy-pipeline in Argo Workflows. This pipeline automates the process of cloning a repository, building a project with Maven, pushing a Docker image using Kaniko, and updating a values.yaml file before pushing the changes back to GitHub.
+
+a. Metadata
+metadata:
+  name: deploy-pipeline
+  namespace: argo-workflows
+
+
+name: Specifies the name of the workflow template. In this case, it's deploy-pipeline.
+
+namespace: Defines the namespace in which this template is applied within the Argo Workflows system. Here, it is set to argo-workflows.
+
+b. Spec
+spec:
+  entrypoint: deploy-pipeline
+  serviceAccountName: argo-workflows-sa
+
+
+entrypoint: Defines the entry point for the workflow. It references the deploy-pipeline template, indicating that the workflow starts by executing the steps defined in that template.
+
+serviceAccountName: Specifies the service account that will be used to execute the workflow. The service account must have the appropriate permissions.
+
+c. Templates
+The workflow consists of multiple templates that define specific tasks. Below are the details for each template.
+
+deploy-pipeline Template
+This is the main template that sequences several steps for the deployment pipeline. It consists of four steps: clone repository, build project with Maven, build and push a Docker image using Kaniko, and update the values.yaml file.
+
+steps:
+  - - name: clone-repo
+      template: clone-repo
+
+    - name: maven-build
+      template: maven-build
+
+    - name: kaniko-build-push
+      template: kaniko-build-push
+
+    - name: update-values-yaml
+      template: update-values-yaml
+
+Each step refers to a specific template (clone-repo, maven-build, kaniko-build-push, update-values-yaml) that executes a corresponding task.
+
+Step 1: clone-repo Template
+name: clone-repo
+container:
+  image: "quay.io/opsmxpublic/opsmx-custom-binaries:kubectl-spin-cli-git-bash-jq-yq-argocd-v2"
+  command: ["/bin/bash", "-c"]
+  args:
+    - |
+        echo "Cloning repository and checking out branch..."
+        git_url=$(echo $GIT_URL)
+        git_branch=$(echo $GIT_BRANCH)
+        git_username=$(echo $GIT_USERNAME)
+        git_credentials=$(echo $GIT_TOKEN)
+
+        echo "Git URL: ${git_url}"
+        echo "Git Branch: ${git_branch}"
+        echo "Git Username: ${git_username}"
+        git config --global credential.helper store
+        echo "/mnt/git-repo already exists, cleaning up..."
+        rm -rf /mnt/git-repo
+        
+        echo "https://${git_username}:${git_credentials}@github.com" > /mnt/git-repo/.git-credentials
+        git clone -b ${git_branch} ${git_url} /mnt/git-repo
+        cd /mnt/git-repo
+        git checkout ${git_branch}
+
+
+Image: A container image (quay.io/opsmxpublic/opsmx-custom-binaries:kubectl-spin-cli-git-bash-jq-yq-argocd-v2) is used for running Git commands.
+Commands:
+Sets Git credentials.
+Removes the existing /mnt/git-repo directory if it exists.
+Clones the repository from the URL and branch specified by the environment variables and checks out the branch.
+Environment Variables:
+The Git URL, branch, username, and token are fetched from Kubernetes secrets for secure access.
+
+Step2: maven-build Template
+This template handles the Maven build process for the project.
+
+name: maven-build
+container:
+  image: "maven"
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+        echo "Building project with Maven..."
+        echo "Cloning repository and checking out branch..."
+        git_url=$(echo $GIT_URL)
+        git_branch=$(echo $GIT_BRANCH)
+        git_username=$(echo $GIT_USERNAME)
+        git_credentials=$(echo $GIT_TOKEN)
+        
+        echo "Git URL: ${git_url}"
+        echo "Git Branch: ${git_branch}"
+        echo "Git Username: ${git_username}"
+        echo "Git Token: ${git_credentials}"
+        
+        git clone -b ${git_branch} ${git_url} /mnt/git-repo
+        cd /mnt/git-repo/
+        ls -ltra /mnt/git-repo
+
+        mvn -B -DskipTests clean install -e > maven-debug.log 2>&1
+        cat /mnt/git-repo/maven-debug.log
+
+
+Image: A container with Maven installed (maven).
+Commands:
+Clone the Git repository and check out the branch.
+Runs Maven with the clean install goal (without tests) to build the project.
+Outputs the build logs to maven-debug.log for troubleshooting.
+Displays the logs using cat.
+
+Note: The logs can be analyzed to detect errors or build issues. The Maven debug log file will provide more insights if there are errors during the build process.
+
+Step3: kaniko-build-push Template
+This template uses Kaniko to build and push a Docker image.
+name: kaniko-build-push
+inputs:
+  parameters:
+    - name: docker-registry
+      value: quay.io
+    - name: docker-image
+      value: opsmxpublic/baseline-issuegen
+    - name: image-tag
+      value: latest
+container:
+  image: gcr.io/kaniko-project/executor:v1.9.0-debug
+  imagePullPolicy: Always
+  command: ["/kaniko/executor"]
+  args:
+    [
+      "--context=git://github.com/NaveenBalagouni/kaniko-build.git",
+      "--dockerfile=/mnt/git-repo/Dockerfile",
+      "--destination={{inputs.parameters.docker-registry}}/{{inputs.parameters.docker-image}}:{{inputs.parameters.image-tag}}"
+    ]
+  volumeMounts:
+    - name: docker-config-volume
+      mountPath: /kaniko/.docker/
+volumes:
+  - name: docker-config-volume
+    secret:
+      secretName: docker-credentialsquay
+      items:
+        - key: .dockerconfigjson
+          path: config.json
+
+Image: The Kaniko executor container (gcr.io/kaniko-project/executor:v1.9.0-debug).
+Commands:
+Builds a Docker image from the Dockerfile present in the cloned repository.
+Pushes the built image to the specified Docker registry (e.g., quay.io).
+Volumes: Mounts the Docker credentials for the registry using a Kubernetes secret (docker-credentialsquay).
+
+Step4: update-values-yaml Template
+This template updates the values.yaml file in the Git repository with the new image tag and commits the changes.
+name: update-values-yaml
+container:
+  image: "quay.io/opsmxpublic/opsmx-custom-binaries:kubectl-spin-cli-git-bash-jq-yq-argocd-v2"
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+        echo "Cloning Git repository..."
+        echo "GIT_URL: $GIT_URL"
+        echo "GIT_BRANCH: $GIT_BRANCH"
+        echo "GIT_USERNAME: $GIT_USERNAME"
+        echo "GIT_TOKEN: $GIT_TOKEN"
+        echo "GIT_EMAIL: $GIT_EMAIL"
+        
+        git_url=$GIT_URL
+        git_branch=$GIT_BRANCH
+        git_username=$GIT_USERNAME
+        git_credentials=$GIT_TOKEN
+
+        echo "Setting up Git credentials..."
+        git config --global credential.helper store
+        echo "https://${git_username}:${git_credentials}@github.com"
+
+        echo "Cloning Git repository..."
+        git clone ${git_url} /mnt/git-repo
+        echo "Current directory: $(pwd)"
+        ls -ltra /mnt/git-repo/
+
+        echo "v1.0.0" > /mnt/git-repo/artifact  
+        # Checking if artifact file exists
+        image=$(cat /mnt/git-repo/artifact)
+        echo "Image tag: $image"
+        yq eval ".image = \"$image\"" -i /mnt/git-repo/values.yaml
+        # Check the contents of values.yaml to verify the change
+        cat /mnt/git-repo/values.yaml
+        
+        cd /mnt/git-repo
+        echo "Pushing changes to GitHub..."
+        git config user.name "$GIT_USERNAME"
+        git config user.email "$GIT_EMAIL"
+        git add /mnt/git-repo/values.yaml
+        git commit -m "Update image tag in values.yaml"
+        git push https://$GIT_USERNAME:$GIT_TOKEN@github.com/NaveenBalagouni/deploy-pipeline.git $GIT_BRANCH
+
+Image: A custom image (quay.io/opsmxpublic/opsmx-custom-binaries:kubectl-spin-cli-git-bash-jq-yq-argocd-v2) with necessary tools like git, yq, and bash.
+Commands:
+Clones the repository.
+Modifies the values.yaml file by updating the image tag.
+Commits and pushes the changes back to GitHub.
+
+Environment Variables: Uses Git credentials stored in Kubernetes secrets for secure access to the Git repository.
+
+Conclusion
+This WorkflowTemplate defines an automated pipeline for building and deploying a project. Each step is modular and can be reused in different workflows. It integrates Git operations, Maven build, Docker image build, and Git commit actions in a seamless pipeline for continuous deployment.
+By defining templates for each task (clone repository, build, build & push Docker image, and update values), this workflow provides an easy-to-understand, maintainable, and scalable CI/CD pipeline.
+
